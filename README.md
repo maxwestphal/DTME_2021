@@ -34,7 +34,7 @@ via mail a few days ago.
 
 ## Installation
 
-Initially, please follow the following steps:
+If you are working locally, please follow the following steps:
 
 ``` r
 ## Install required packages for installation:
@@ -50,6 +50,16 @@ usethis::create_from_github("https://github.com/maxwestphal/DTME_2021.git", dest
 ## (needs to be confirmed in the R console and will take a while)
 renv::restore()
 ```
+
+Alternatively (recommended for RStudio Server), please open the terminal
+(2nd tab next to the R console) and execute the following command.
+
+``` bash
+git clone https://github.com/maxwestphal/DTME_2021
+```
+
+After that, open the new R project DTME\_2021 and run `renv::restore()`
+in the R console.
 
 ------------------------------------------------------------------------
 

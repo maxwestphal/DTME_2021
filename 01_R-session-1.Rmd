@@ -1,0 +1,554 @@
+---
+title: "Data Train | OT-SC-WS-04: Evaluating machine learning and artificial intelligence algorithms"
+author:
+- "Max Westphal (max.westphal@mevis.fraunhofer.de)"
+- "Pascal Rink (p.rink@uni-bremen.de)"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+toc: yes
+toc_depth: 3
+toc_float: yes
+editor_options:
+  markdown:
+    wrap: 80
+---
+
+# R session 1: ML performance evaluation basics
+
+```{r}
+## clear enviroment:
+rm(list = ls())
+
+## calc_costly determines if computationally expensive steps should be run during notebook rendering:
+calc_costly <- FALSE
+
+## calc_costly determines if certain intermediate variables should be saved during notebook rendering:
+save_vars <- FALSE
+```
+
+```{r packages, message=FALSE}
+library(dplyr)
+library(mlr3verse)
+```
+
+## Exercise 1: mlr3 basics (30 minutes)
+
+Throughout the entire course, we will make heavy use of the r package **mlr3**.
+We will spend some time in the beginning to get familiar with the (somewhat
+special) R6 syntax employed by mlr3.
+
+For this matter, please go through the excellent **mlr3 book** at
+[\<https://mlr3book.mlr-org.com/index.html\>](https://mlr3book.mlr-org.com/index.html){.uri},
+in particular the first two sections "Introduction and Overview" and "Basics".
+You can open a separate R script (ctrl-shift-n) and experiment with the code
+from the book yourself.
+
+We encourage you to revisit the mlr3 book whenever you need help during the
+course. In addition, a wide variety of code examples is provided in the **mlr3
+gallery** at
+[\<https://mlr3gallery.mlr-org.com/\>](https://mlr3gallery.mlr-org.com/){.uri}.
+
+Finally, we provide you with some basic knowledge for the ML algorithms employed
+in this course:
+
+-   logistic regression (lr):
+    [\<https://en.wikipedia.org/wiki/Logistic_regression\>](https://en.wikipedia.org/wiki/Logistic_regression){.uri}
+-   support vector machine (svm):
+    [\<https://en.wikipedia.org/wiki/Support-vector_machine\>](https://en.wikipedia.org/wiki/Support-vector_machine){.uri}
+-   random forest (rf):
+    [\<https://en.wikipedia.org/wiki/Support-vector_machine\>](https://en.wikipedia.org/wiki/Support-vector_machine){.uri}
+-   extreme gradient boosting (xgb):
+    [\<https://en.wikipedia.org/wiki/XGBoost\>](https://en.wikipedia.org/wiki/XGBoost){.uri}
+
+Let's have a look at the corresponding **learner** representations in mlr3,
+which show some fundamental properties.
+
+```{r algos_in_mlr3_1}
+mlr_learners$get("classif.log_reg")
+```
+
+```{r algos_in_mlr3_2}
+mlr_learners$get("classif.svm")
+```
+
+```{r algos_in_mlr3_3}
+mlr_learners$get("classif.ranger")
+```
+
+```{r algos_in_mlr3_4}
+mlr_learners$get("classif.xgboost")
+```
+
+--------------------------------------------------------------------------------
+
+## Exercise 2: Preparation of breast cancer task and EDA (30 minutes)
+
+Today, we will focus on the breast cancer task included in the mlr3 package. Our
+goal will be to predict the `class` variable, i.e. whether a certain tumor is
+malignant or benign. Let's have a look at the data.
+
+```{r}
+bc_task <- tsk("breast_cancer")
+bc_task$data()
+```
+
+As we can see, the data set contains 683 observations of the target variable and
+nine features, which can be used for prediction. Please read the documentation
+below:
+
+```{r, eval=FALSE}
+bc_task$help()
+```
+
+Before we do anything, lets split our data. As the total number of samples seems
+sufficient, we adopt the default 3-way training-validation-test split to get
+started. While `mlr3` is great, it is limited with regards to performing
+statistical inference (confidence intervals, statistical testing) on the test
+data.
+
+We will first split off a test data set and not look at it until the very end.
+We will use a random 25% of observations (rows) for testing:
+
+```{r}
+set.seed(122333) 
+obs_ids <- 1:bc_task$nrow
+test_ids <- sample(obs_ids, round(0.25*length(obs_ids)))
+length(test_ids)
+```
+
+```{r}
+if(save_vars){
+  saveRDS(test_ids, "data/session1/bc_test_ids.rds") 
+}
+test_ids <- readRDS("data/session1/bc_test_ids.rds")
+```
+
+**Task: Define the `learn_ids` (observations for training & validation) as the
+remaining rows.**
+
+```{r}
+learn_ids <- NA # <--- YOUR CODE HERE --->
+```
+
+```{r}
+bc_data <- bc_task$data()
+bc_data_learn <- bc_data[learn_ids, ]
+bc_data_test <- bc_data[test_ids, ]
+
+bc_task$filter(rows=learn_ids)
+```
+
+In the original `"breast_cancer"` task, the features are encoded as ordinal. Not
+all learning algorithms are able to cope with ordinal features though. For this
+reason, we derive an identical task where all features are converted to
+`numeric` variables.
+
+```{r}
+apply(bc_data_learn, 2, class)
+bc_data_num <- bc_data %>% mutate_at(2:10, as.numeric)
+bc_data_learn_num <- bc_data_learn %>% mutate_at(2:10, as.numeric)
+bc_data_test_num <- bc_data_test %>% mutate_at(2:10, as.numeric)
+
+bc_task_num <- as_task_classif(bc_data_learn_num,
+                               target="class",
+                               id="bc_task_num")
+```
+
+Let's have a look at the complete learning data (not the test data, which we
+have excluded from the task).
+
+```{r}
+summary(bc_data_learn)
+autoplot(bc_task, type = "duo")
+```
+
+```{r}
+summary(bc_data_learn_num)
+autoplot(bc_task_num, type = "duo")
+```
+
+**Question: What features do you suspect to be predictive for the target
+variable**?
+
+**Question: Why is it, strictly speaking, not valid to ask the same question
+when looking at the complete data set (including the test data)?**
+
+--------------------------------------------------------------------------------
+
+## Exercise 3: Training, prediction and inference with SVM (30 minutes)
+
+Let's start with logistic regression, an established statistical classification
+model. We will just use it as a baseline, i.e. try to beat it with other
+classification models.
+
+```{r}
+lr_learner <- lrn("classif.log_reg")
+lr_learner$train(bc_task_num)
+```
+
+A great advantage of such a simple model is it's interpretability.
+
+```{r}
+lr_learner$model %>% summary()
+```
+
+**Question: based on the above output - what can we learn regarding the
+importance of individual features?**
+
+Getting test set predictions is also easy:
+
+```{r}
+lr_pred <- lr_learner$predict_newdata(bc_data_test_num)
+lr_pred
+```
+
+We want to calculate some performance metrics including the corresponding
+(approximate) confidence intervals:
+
+-   `acc` = accuracy
+
+-   `tpr` = true positive rate = sensitivity
+
+-   `tnr` = true negative rate = specificity
+
+-   `bacc` = balanced accuracy
+
+A comprehensive overview is given here:
+<https://en.wikipedia.org/wiki/Evaluation_of_binary_classifiers>
+
+**Task: complete the following custom function, to calculate the above estimates
+and confidence intervals.**
+
+```{r classif_metrics_fun}
+classif_metrics <- function(pred,
+                            labels,
+                            classif = "",
+                            positive = "malignant",
+                            cv = qnorm(0.975)){
+
+  stopifnot(length(pred) == length(labels))
+
+  tp <- labels == positive
+  tn <- !tp
+
+  y <- pred == labels
+
+  n <- length(labels)
+  n1 <- sum(tp)
+  n0 <- sum(tn)
+
+  out <-
+    data.frame(acc = mean(y)) %>%
+    mutate(
+      acc_se = sqrt(acc*(1-acc)/n),
+      acc_lower = acc - cv*acc_se,
+      acc_upper = acc + cv*acc_se,
+      tpr = mean(y[tp]),
+      tpr_se = sqrt(tpr*(1-tpr)/n1),
+      tpr_lower = tpr - cv*tpr_se,
+      tpr_upper = tpr + cv*tpr_se,
+      tnr = NA # <--- YOUR CODE HERE --->,
+      tnr_se = NA # <--- YOUR CODE HERE --->,
+      tnr_lower = NA # <--- YOUR CODE HERE --->,
+      tnr_upper = NA # <--- YOUR CODE HERE --->,
+      bacc = 0.5*tpr + 0.5*tnr,
+      bacc_se = sqrt(0.25*tpr_se^2 + 0.25*tnr_se^2),
+      bacc_lower = bacc - cv*bacc_se,
+      bacc_upper = bacc + cv*bacc_se
+    )
+  rownames(out) <- classif
+  return(out)
+}
+```
+
+Let's apply the function:
+
+```{r}
+lr_results <- classif_metrics(pred = lr_pred$response,
+                              labels = lr_pred$truth,
+                              "lr")
+lr_results %>% t()
+```
+
+**Question: Do you notice anything strange with these numbers?**
+
+Let's try something more complex now. Support vector machines (SVM) are a
+classical machine learning method. In contrast to the basic logistic regression
+model, we have hyperparameters to tune here, e.g. additional (secondary)
+parameters that influence the optimization of (primary) model parameters.
+
+```{r}
+svm_learner <- mlr3tuningspaces::lts(lrn("classif.svm"))
+svm_learner$param_set$values$type <- "C-classification"
+svm_learner$param_set
+```
+
+We will utilize the `tune` function from the `mlr3tuning` package. Make sure to
+check its documentation
+
+```{r, eval=calc_costly, message=FALSE, results = 'hide'}
+set.seed(1337)
+svm_learner_tuned <- mlr3tuning::tune(
+  method = "random_search",
+  task = bc_task_num,
+  learner = svm_learner,
+  resampling = rsmp("holdout", ratio=0.8),
+  measures = msrs(c("classif.bacc", "classif.acc", "classif.tpr", "classif.tnr")),
+  term_evals = 40
+)
+```
+
+**Question: What is the meaning of the `term_evals` argument in the function
+call above?**
+
+```{r}
+if(save_vars){
+  saveRDS(svm_learner_tuned, "data/session1/svm_learner_tuned.rds")
+}
+svm_learner_tuned <- readRDS("data/session1/svm_learner_tuned.rds")
+```
+
+```{r}
+svm_learner_tuned$result
+```
+
+The following plot shows how the models perform in terms of `tpr` and `tnr` .
+
+```{r}
+library(ggplot2)
+svm_learner_tuned$archive$data %>%
+  ggplot(aes(x=classif.tpr, y=classif.tnr)) +
+  geom_point()
+```
+
+Now, let's identify the best svm models in terms of balanced accuracy.
+
+```{r}
+svm_best <- which(
+  svm_learner_tuned$result$classif.bacc == 
+    max(svm_learner_tuned$result$classif.bacc))
+svm_learner_tuned$result[svm_best]
+```
+
+We have a tie: three models with the same `bacc` of around 98.5%. We choose one
+of them (the first one) and define a new model `svm_learner_final` to be
+re-trained on training and validation data before we look at the test data.
+
+```{r}
+svm_best <- svm_best[1]
+svm_learner_final <- lrn("classif.svm")
+svm_learner_final$param_set$values <- svm_learner_tuned$result$learner_param_vals[[svm_best]]
+svm_learner_final$param_set
+svm_learner_final$train(bc_task_num)
+```
+
+We obtain test predictions and apply our custom function `classif_metrics.`
+
+```{r}
+svm_pred <- svm_learner_final$predict_newdata(bc_data_test_num)
+svm_results <- classif_metrics(pred = svm_pred$response,
+                               labels = svm_pred$truth,
+                               "svm")
+svm_results %>% t()
+```
+
+```{r}
+rbind(lr_results, svm_results) %>% t()
+```
+
+**Question: Is there a difference in terms of balanced accuracy between the best
+svm model and the baseline logistic regression model?**
+
+As we have a paired comparison here (both models are applied to the same test
+data set), we can choose an even more accurate method for statistical inference.
+We do this now by defining a new function `bacc_delta` by calculating a
+confidence interval for the difference in balanced accuracy.
+
+```{r}
+bacc_delta <- function(d, positive = "malignant"){
+
+  tp <- d$labels == positive
+  tn <- !tp
+
+  y1 <- d$pred1 == d$labels
+  y2 <- d$pred2 == d$labels
+
+  n <- length(d$labels)
+  n1 <- sum(tp)
+  n0 <- sum(tn)
+  
+  bacc1 <- 0.5 * mean(y1[tp]) + 0.5 * mean(y1[tn])
+  bacc2 <- 0.5 * mean(y2[tp]) + 0.5 * mean(y2[tn])
+  delta <- bacc1 - bacc2
+  
+  return(delta)
+}
+```
+
+Let's create the required `data.frame` and calculate the `bacc` point estimate
+
+```{r}
+pred_data <- data.frame(pred1 = svm_pred$response,
+                        pred2 = lr_pred$response,
+                        labels = lr_pred$truth)
+bacc_delta(pred_data)
+```
+
+We still have not quantified the uncertainty associated with this estimate.
+Let's do that now with the so-called bootstrap - a very versatile, nonparametric
+statistical inference technique.
+
+```{r, eval=FALSE}
+?boot::boot
+?boot::boot.ci
+```
+
+```{r}
+set.seed(1337)
+boot::boot(
+  data = pred_data, 
+  statistic = function(d, i){bacc_delta(d[i, ])},
+  R = 2000) %>% 
+  boot::boot.ci()
+```
+
+**Question: How can these confidence interval(s) be interpreted?**
+
+--------------------------------------------------------------------------------
+
+## Exercise 4: Comparison of risk prediction models (30 minutes)
+
+Binary classification seems to works quite well on the breast cancer task. Now
+we move to risk prediction instead. Risk prediction is more general, i.e. the
+trained model can predict class probabilities.
+
+For this we, need to set `predict_type="prob"` in the learner definition.
+
+```{r}
+lr_learner_pr <- lrn("classif.log_reg", predict_type="prob")
+lr_learner_pr$train(bc_task_num)
+```
+
+```{r}
+lr_pred_pr <- lr_learner_pr$predict_newdata(bc_data_test_num)
+lr_pred_pr
+```
+
+```{r, echo=FALSE, eval=FALSE}
+svm_learner_pr <- mlr3tuningspaces::lts(lrn("classif.svm"))
+svm_learner_pr$predict_type <- "prob"
+svm_learner_pr$param_set$values$type <- "C-classification"
+svm_learner_pr$param_set$values$gamma
+svm_learner_pr$param_set
+
+set.seed(1337)
+svm_learner_pr_tuned <- tune(
+  method = "random_search",
+  task = bc_task_num,
+  learner = svm_learner_pr,
+  resampling = rsmp("holdout", ratio=0.8),
+  measures = msrs(c("classif.auc")),
+  term_evals = 40
+)
+
+svm_best_pr <- which.max(svm_learner_pr_tuned$result$classif.auc)
+svm_best_pr <- svm_best_pr[1]
+svm_learner_pr_final <- lrn("classif.svm", predict_type = "prob")
+svm_learner_pr_final$param_set$values <- svm_learner_pr_tuned$result$learner_param_vals[[svm_best_pr]]
+svm_learner_pr_final$param_set
+svm_learner_pr_final$train(bc_task_num)
+```
+
+Note that we access the `bc_task` with ordinal features this time as the random
+forest learner is able to handle those.
+
+```{r, message = FALSE, results=FALSE}
+rf_learner_pr <- mlr3tuningspaces::lts(lrn("classif.ranger"))
+rf_learner_pr$predict_type <- "prob"
+rf_learner_pr$param_set
+
+set.seed(1337)
+rf_learner_pr_tuned <- mlr3tuning::tune(
+  method = "random_search",
+  task = bc_task,
+  learner = rf_learner_pr,
+  resampling = rsmp("holdout", ratio=0.8),
+  measures = msrs(c("classif.auc")),
+  term_evals = 40
+)
+```
+
+```{r}
+if(save_vars){
+  saveRDS(rf_learner_pr_tuned, "data/session1/rf_learner_pr_tuned.rds")
+}
+rf_learner_pr_tuned <- readRDS("data/session1/rf_learner_pr_tuned.rds")
+```
+
+```{r}
+rf_learner_pr_tuned$result 
+```
+
+Conduct the same steps as with the SVM models before.
+
+```{r}
+rf_best <- which.max(rf_learner_pr_tuned$result$classif.auc)
+rf_best <- rf_best[1]
+rf_learner_pr_final <- lrn("classif.ranger", predict_type = "prob")
+rf_learner_pr_final$param_set$values <- rf_learner_pr_tuned$result$learner_param_vals[[rf_best]]
+rf_learner_pr_final$param_set
+rf_learner_pr_final$train(bc_task)
+```
+
+Now we apply our model to the test data.
+
+```{r}
+rf_pred_pr <- rf_learner_pr_final$predict_newdata(bc_data_test)
+rf_pred_pr
+```
+
+In the following we will make use of the R package `pROC` to estimate, plot and
+compare the ROC curve and area under the curve (AUC) of our two models
+
+```{r, message=FALSE}
+library(pROC)
+```
+
+```{r, eval=FALSE}
+?roc
+?auc
+?roc.test
+```
+
+**Task: Fill in the gaps to correctly define the ROC curve of the RF model.**
+
+```{r}
+lr_roc <- roc(response = lr_pred_pr$truth,
+              predictor = lr_pred_pr$prob[, "malignant"],
+              levels = c("benign", "malignant")) 
+rf_roc <- roc(NA # <--- YOUR CODE HERE --->
+              ) 
+```
+
+```{r}
+plot(lr_roc)
+plot(rf_roc)
+```
+
+Lets calculate the empirical area under the curves (AUCs).
+
+```{r}
+auc(rf_roc)
+auc(lr_roc)
+```
+
+Finally, we conduct a significance test and calculate a confidence interval for
+the difference in AUCs.
+
+```{r}
+roc.test(rf_roc, lr_roc)
+```
+
+**Question: How can these results be interpreted?**

@@ -40,27 +40,23 @@ We will spend some time in the beginning to get familiar with the (somewhat
 special) R6 syntax employed by mlr3.
 
 For this matter, please go through the excellent **mlr3 book** at
-[\<https://mlr3book.mlr-org.com/index.html\>](https://mlr3book.mlr-org.com/index.html){.uri},
-in particular the first two sections "Introduction and Overview" and "Basics".
-You can open a separate R script (ctrl-shift-n) and experiment with the code
-from the book yourself.
+<https://mlr3book.mlr-org.com/index.html>, in particular the first two sections
+"Introduction and Overview" and "Basics". You can open a separate R script
+(ctrl-shift-n) and experiment with the code from the book yourself.
 
 We encourage you to revisit the mlr3 book whenever you need help during the
 course. In addition, a wide variety of code examples is provided in the **mlr3
-gallery** at
-[\<https://mlr3gallery.mlr-org.com/\>](https://mlr3gallery.mlr-org.com/){.uri}.
+gallery** at <https://mlr3gallery.mlr-org.com/>.
 
 Finally, we provide you with some basic knowledge for the ML algorithms employed
 in this course:
 
 -   logistic regression (lr):
-    [\<https://en.wikipedia.org/wiki/Logistic_regression\>](https://en.wikipedia.org/wiki/Logistic_regression){.uri}
+    <https://en.wikipedia.org/wiki/Logistic_regression>
 -   support vector machine (svm):
-    [\<https://en.wikipedia.org/wiki/Support-vector_machine\>](https://en.wikipedia.org/wiki/Support-vector_machine){.uri}
--   random forest (rf):
-    [\<https://en.wikipedia.org/wiki/Support-vector_machine\>](https://en.wikipedia.org/wiki/Support-vector_machine){.uri}
--   extreme gradient boosting (xgb):
-    [\<https://en.wikipedia.org/wiki/XGBoost\>](https://en.wikipedia.org/wiki/XGBoost){.uri}
+    <https://en.wikipedia.org/wiki/Support-vector_machine>
+-   random forest (rf): <https://en.wikipedia.org/wiki/Support-vector_machine>
+-   extreme gradient boosting (xgb): <https://en.wikipedia.org/wiki/XGBoost>
 
 Let's have a look at the corresponding **learner** representations in mlr3,
 which show some fundamental properties.
@@ -129,7 +125,7 @@ test_ids <- readRDS("data/session1/bc_test_ids.rds")
 remaining rows.**
 
 ```{r}
-learn_ids <- NA # <--- YOUR CODE HERE --->
+learn_ids <- setdiff(obs_ids, test_ids)
 ```
 
 ```{r}
@@ -172,8 +168,15 @@ autoplot(bc_task_num, type = "duo")
 **Question: What features do you suspect to be predictive for the target
 variable**?
 
+-   In particular the first five features as they clearly show a different
+    (empirical) distribution in the `malignant` and `benign` samples.
+
 **Question: Why is it, strictly speaking, not valid to ask the same question
 when looking at the complete data set (including the test data)?**
+
+-   Because information from the test data might leak, i.e. influence our model
+    development (and particular) selection process such that the final
+    performance assessment on the test data will potentially be biased.
 
 --------------------------------------------------------------------------------
 
@@ -196,6 +199,10 @@ lr_learner$model %>% summary()
 
 **Question: based on the above output - what can we learn regarding the
 importance of individual features?**
+
+-   The features `bare_nuclei` and `cl_thickness` are strong predictors as they
+    show a significant association with the target variable (at the
+    $\alpha=0.05$ level).
 
 Getting test set predictions is also easy:
 
@@ -249,10 +256,10 @@ classif_metrics <- function(pred,
       tpr_se = sqrt(tpr*(1-tpr)/n1),
       tpr_lower = tpr - cv*tpr_se,
       tpr_upper = tpr + cv*tpr_se,
-      tnr = NA # <--- YOUR CODE HERE --->,
-      tnr_se = NA # <--- YOUR CODE HERE --->,
-      tnr_lower = NA # <--- YOUR CODE HERE --->,
-      tnr_upper = NA # <--- YOUR CODE HERE --->,
+      tnr = mean(y[neg]),
+      tnr_se = sqrt(tnr*(1-tnr)/n0),
+      tnr_lower = tnr - cv*tnr_se,
+      tnr_upper = tnr + cv*tnr_se,
       bacc = 0.5*tpr + 0.5*tnr,
       bacc_se = sqrt(0.25*tpr_se^2 + 0.25*tnr_se^2),
       bacc_lower = bacc - cv*bacc_se,
@@ -263,8 +270,6 @@ classif_metrics <- function(pred,
 }
 ```
 
-Let's apply the function:
-
 ```{r}
 lr_results <- classif_metrics(pred = lr_pred$response,
                               labels = lr_pred$truth,
@@ -273,6 +278,12 @@ lr_results %>% t()
 ```
 
 **Question: Do you notice anything strange with these numbers?**
+
+-   For estimated proportions of one, we have `se=0` and thus a zero width
+    confidence interval.
+-   Upper values of \> 1 are possible for approximate confidence intervals
+-   Both issues can be resolved by using more complex inference methods such as
+    the bootstrap (we'll have a look of this method later).
 
 Let's try something more complex now. Support vector machines (SVM) are a
 classical machine learning method. In contrast to the basic logistic regression
@@ -302,6 +313,9 @@ svm_learner_tuned <- mlr3tuning::tune(
 
 **Question: What is the meaning of the `term_evals` argument in the function
 call above?**
+
+-   The maximum number of training runs. In case of the `"random_search"` tuning
+    strategy, this is equal to the evaluated number of hyperparameters.
 
 ```{r}
 if(save_vars){
@@ -361,6 +375,9 @@ rbind(lr_results, svm_results) %>% t()
 **Question: Is there a difference in terms of balanced accuracy between the best
 svm model and the baseline logistic regression model?**
 
+-   The confidence intervals for `bacc` clearly overlap, indicating no
+    significant difference between the two models.
+
 As we have a paired comparison here (both models are applied to the same test
 data set), we can choose an even more accurate method for statistical inference.
 We do this now by defining a new function `bacc_delta` by calculating a
@@ -369,18 +386,18 @@ confidence interval for the difference in balanced accuracy.
 ```{r}
 bacc_delta <- function(d, positive = "malignant"){
 
-  tp <- d$labels == positive
-  tn <- !tp
+  pos <- d$labels == positive
+  neg <- !pos
 
   y1 <- d$pred1 == d$labels
   y2 <- d$pred2 == d$labels
 
   n <- length(d$labels)
-  n1 <- sum(tp)
-  n0 <- sum(tn)
+  n1 <- sum(pos)
+  n0 <- sum(neg)
   
-  bacc1 <- 0.5 * mean(y1[tp]) + 0.5 * mean(y1[tn])
-  bacc2 <- 0.5 * mean(y2[tp]) + 0.5 * mean(y2[tn])
+  bacc1 <- 0.5 * mean(y1[pos]) + 0.5 * mean(y1[neg])
+  bacc2 <- 0.5 * mean(y2[pos]) + 0.5 * mean(y2[neg])
   delta <- bacc1 - bacc2
   
   return(delta)
@@ -415,6 +432,10 @@ boot::boot(
 ```
 
 **Question: How can these confidence interval(s) be interpreted?**
+
+-   The data does not indicate that there is a significance difference at the
+    $\alpha=0.05$ level with regard to balanced accuracy between the baseline
+    logistic regression model and the best SVM model.
 
 --------------------------------------------------------------------------------
 
@@ -528,8 +549,9 @@ library(pROC)
 lr_roc <- roc(response = lr_pred_pr$truth,
               predictor = lr_pred_pr$prob[, "malignant"],
               levels = c("benign", "malignant")) 
-rf_roc <- roc(NA # <--- YOUR CODE HERE --->
-              ) 
+rf_roc <- roc(response = rf_pred_pr$truth,
+              predictor = rf_pred_pr$prob[, "malignant"],
+              levels = c("benign", "malignant")) 
 ```
 
 ```{r}
@@ -552,3 +574,7 @@ roc.test(rf_roc, lr_roc)
 ```
 
 **Question: How can these results be interpreted?**
+
+-   There is a small empirical difference in AUCs in favor of the (simpler)
+    logistic regression model. At the $\alpha = 0.05$ level this difference is
+    not statistically significant.

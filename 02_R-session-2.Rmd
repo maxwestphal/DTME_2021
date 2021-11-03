@@ -1,0 +1,594 @@
+---
+title: "Data Train | OT-SC-WS-04: Evaluating machine learning and artificial intelligence
+  algorithms"
+author:
+- Max Westphal (max.westphal@mevis.fraunhofer.de)
+output:
+  html_document:
+    df_print: paged
+toc: yes
+toc_depth: 3
+toc_float: yes
+editor_options: 
+  markdown: 
+    wrap: 80
+---
+
+# R session 2: Experimental design in ML performance evaluation
+
+```{r}
+## clear enviroment:
+rm(list = ls())
+
+## calc_costly determines if computationally expensive steps should be run during notebook rendering:
+calc_costly <- FALSE
+
+## save_vars determines if certain intermediate variables should be saved during notebook rendering:
+save_vars <- FALSE
+```
+
+```{r packages, message=FALSE}
+library(dplyr)
+library(mlr3verse)
+```
+
+--------------------------------------------------------------------------------
+
+## Exercise 1: Task preparation (15 minutes)
+
+Today, we work with the **Cardiotocography Data Set** from the **UCI Machine
+Learning Repository**. Let's import a preprocessed version of the data set.
+
+```{r}
+ctg_data <- readRDS("data/session2/ctg_data.rds")
+dim(ctg_data)
+head(ctg_data)
+```
+
+A basic documentation and the original data is provided at
+[<https://archive.ics.uci.edu/ml/datasets/cardiotocography>](https://archive.ics.uci.edu/ml/datasets/cardiotocography){.uri}.
+There, it is stated that
+
+> 2126 fetal cardiotocograms (CTGs) were automatically processed and the
+> respective diagnostic features measured. The CTGs were also classified by
+> three expert obstetricians and a consensus classification label assigned to
+> each of them. Classification was both with respect to a morphologic pattern
+> (A, B, C. ...) and to a fetal state (N, S, P). Therefore the dataset can be
+> used either for 10-class or 3-class experiments
+
+We actually have a simplified version of the task with a binary target `status`
+with two states `"suspect"`(positive class, including the original
+`"pathological"` state) and `"normal"`. In addition, a few unneeded columns have
+been removed from the original data set.
+
+```{r}
+summary(ctg_data$status)
+```
+
+Note: The data set has a `Date` variable, i.e. each observation has a time
+stamp, which is rare for public data sets. The observations are actually sorted
+according to `Date`. We will make use of this feature throughout this exercise.
+
+```{r}
+summary(ctg_data$Date)
+```
+
+```{r}
+table(substr(ctg_data$Date, 1, 4))
+```
+
+The number of observations makes clear that we (strangely) have 56 observations
+from 1980, a very small number compared to the remaining observations from the
+years 1995-1998. One may reasonable suspect that these observations will be
+quite distinct from the rest (or a coding error). Anyhow, we will remove the
+observations from the data set for our purposes.
+
+**Task: reduce `ctg_data` to only include observations from the year
+1995-1998.**
+
+```{r}
+ctg_data <- NA # <--- YOUR CODE HERE --->
+table(substr(ctg_data$Date, 1, 4))
+```
+
+Let's define the `mlr3` ML task for today:
+
+```{r}
+ctg_task <- as_task_classif(ctg_data %>% select(-Date),
+                            target = "status",
+                            positive = "suspect",
+                            id = "ctg_task")
+ctg_task
+```
+
+**Question: Why do we want exclude the `Date` variable from the feature set for
+modeling purposes?**
+
+By the way, we will not cut of a distinct test set today (compared to session
+1). The main reason is simplicity. If this was a real-life study, an additional
+evaluation on a distinct test data set might be needed, depending on the
+context.
+
+```{r}
+autoplot(ctg_task, type="duo")
+```
+
+--------------------------------------------------------------------------------
+
+## Exercise 2: Common CV variants (15 minutes)
+
+The focus in the following will be in defining different experimental designs
+and observing and interpreting the different results. We would not do this in an
+actual ML project but rather decide in advance which experimental design suits
+the context of our study best, e.g. is best aligned with our study goals and/or
+deployment scenarios.
+
+### Cross-validation (10-fold)
+
+We start by defining a very standard design, namely 10-fold CV.
+
+```{r}
+set.seed(1337)
+exp_design_a <- rsmp("cv")
+exp_design_a$instantiate(ctg_task)
+exp_design_a$instance %>% plot()
+
+```
+
+### Cross-validation (5-fold)
+
+**Task: define `exp_design_b` as 5-fold CV.**
+
+```{r}
+set.seed(1337)
+exp_design_b <- NA # <--- YOUR CODE HERE --->
+exp_design_b$instantiate(ctg_task)
+exp_design_b$instance %>% plot()
+```
+
+### Repeated cross-validation (5-fold, 4 repeats)
+
+**Task: define `exp_design_c` as repeated CV with 5 folds and 4 repetitions.**
+
+```{r}
+set.seed(1337)
+exp_design_c <- NA # <--- YOUR CODE HERE --->
+exp_design_c$instantiate(ctg_task)
+exp_design_c$instance %>% plot()
+```
+
+--------------------------------------------------------------------------------
+
+## Exercise 3: Custom experimental designs (15 minutes)
+
+We have removed the `Date` variable for modeling purposes but we want to employ
+it to define custom experimental designs in the following.
+
+**Task: create a copy `ctg_data_ext` of `ctg_data` with one additional variable
+showing the year component of `Date`**.
+
+```{r}
+ctg_data_ext <- NA # <--- YOUR CODE HERE --->
+table(ctg_data_ext$Year)
+```
+
+### Cross-validation (grouped by year)
+
+Usual (random) cross-validation assumes a homogeneous data sample and assesses
+generalization to new (unseen) samples. We might suspect that patient
+characteristics change over time. Thus, for the next, experimental design we
+want to access how models generalize to different years (unseen during
+training). Have a close look at the (special) syntax, you might need it quite
+soon.
+
+```{r}
+exp_design_d <- rsmp("custom_cv")
+exp_design_d$instantiate(ctg_task, f=as.factor(ctg_data_ext$Year))
+exp_design_d$instance %>% str()
+
+```
+
+### Custom design "train 1, predict 1"
+
+Now we want to define a `"custom"` design, where data from one year is used for
+training and assessed on unseen data from the following year.
+
+```{r}
+rsmp("custom")
+```
+
+```{r}
+unique(ctg_data_ext$Year)
+```
+
+**Task: define two lists`train_sets_e` and `test_sets_e` . Both lists should
+have length 3. (Why?) Each element is a vector of row indies defining train and
+test sets as indicated above.**
+
+(Hint: you need to incorporate the variable `ctg_data_ext$Year` )
+
+```{r}
+train_sets_e <- list(
+  which(ctg_data_ext$Year == "1995"),
+  NA, # <--- YOUR CODE HERE --->
+  NA # <--- YOUR CODE HERE --->
+)
+test_sets_e <- list(
+  which(ctg_data_ext$Year == "1996"),
+  NA, # <--- YOUR CODE HERE --->
+  NA # <--- YOUR CODE HERE --->
+) 
+```
+
+```{r}
+exp_design_e <- rsmp("custom")
+exp_design_e$instantiate(ctg_task,
+                         train_sets = train_sets_e,
+                         test_sets = test_sets_e)
+exp_design_e$instance %>% str()
+```
+
+### Custom design "train 2, predict 1"
+
+Lets slightly adapt the last design and now train on the two years preceding the
+year before the 'test year'.
+
+**Task: define two lists`train_sets_f` and `test_sets_f` . Both lists should
+have length 2. (Why?) Each element is a vector of row indies defining train and
+test sets as indicated above.**
+
+```{r}
+train_sets_f NA # <--- YOUR CODE HERE --->
+test_sets_f <- NA # <--- YOUR CODE HERE --->
+```
+
+```{r}
+exp_design_f <- NA # <--- YOUR CODE HERE --->
+exp_design_f$instantiate(NA # <--- YOUR CODE HERE --->
+                         )
+exp_design_f$instance %>% str()
+```
+
+--------------------------------------------------------------------------------
+
+## Exercise 4: Model tuning (10 minutes)
+
+Now that we defined all these different experimental design (training/validation
+splits), lets compare the benchmark results.
+
+Today, we'll be employing a famous and very powerful algorithm extreme gradient
+boosting (XGBoost). This will get computationally intensive, at least much more
+than before. We can use the parallelization capabilities of `mlr3` to reduce the
+run time of our benchmark experiment.
+
+**Note: The code blocks below (`xgb_learner_tuned_xyz <- tune(…)` ) may take a
+long time to run. We have pre-computed the results for you. They will be loaded
+at the start of the next section. Make sure that you understand what's happening
+in the next code chunks even if you don't run them.**
+
+```{r}
+future::availableCores()
+num_threads <- round(0.8*future::availableCores())
+# num_threads <- 1 # when working on RStudio Server
+```
+
+```{r}
+future::plan("multisession")
+```
+
+To get a reasonable default hyperparameter tuning space we make use of the
+`mlr3tuningspaces` package.
+
+```{r}
+ts <- mlr3tuningspaces::lts("classif.xgboost.default")
+xgb_learner <- ts$get_learner()
+xgb_learner$predict_type <- "prob"
+set_threads(xgb_learner, n = num_threads)
+xgb_learner
+
+```
+
+Lets sample 40 hyperparameters from this space now.
+
+```{r}
+set.seed(1337)
+num_hp <- 40
+xgb_space <- xgb_learner$param_set$search_space()
+xgb_hp <- generate_design_lhs(xgb_space, num_hp)
+xgb_hp
+```
+
+**Question: What is the function `generate_design_lhs` doing?**
+
+```{r}
+if(save_vars){
+  saveRDS(xgb_hp, "data/session2/xgb_hp.rds")
+}
+xgb_hp <- readRDS("data/session2/xgb_hp.rds")
+```
+
+```{r, eval=calc_costly, results='hide'}
+set.seed(1337)
+xgb_learner_tuned_a <- mlr3tuning::tune(
+  method = "design_points",
+  task = ctg_task,
+  learner = xgb_learner,
+  resampling = exp_design_a,
+  measures = msrs(c("classif.auc")),
+  design = xgb_hp$data,
+  batch_size = num_threads
+)
+```
+
+--------------------------------------------------------------------------------
+
+```{r, eval=calc_costly, results='hide'}
+set.seed(1337)
+xgb_learner_tuned_b <- mlr3tuning::tune(
+  method = "design_points",
+  task = ctg_task,
+  learner = xgb_learner,
+  resampling = exp_design_b,
+  measures = msrs(c("classif.auc")),
+  design = xgb_hp$data,
+  batch_size = num_threads
+)
+```
+
+```{r, eval=calc_costly, results='hide'}
+set.seed(1337)
+xgb_learner_tuned_c <- mlr3tuning::tune(
+  method = "design_points",
+  task = ctg_task,
+  learner = xgb_learner,
+  resampling = exp_design_c,
+  measures = msrs(c("classif.auc")),
+  design = xgb_hp$data,
+  batch_size = num_threads
+)
+```
+
+```{r, eval=calc_costly, results='hide'}
+set.seed(1337)
+xgb_learner_tuned_d <- mlr3tuning::tune(
+  method = "design_points",
+  task = ctg_task,
+  learner = xgb_learner,
+  resampling = exp_design_d,
+  measures = msrs(c("classif.auc")),
+  design = xgb_hp$data,
+  batch_size = num_threads
+)
+```
+
+```{r, eval=calc_costly, results='hide'}
+set.seed(1337)
+xgb_learner_tuned_e <- mlr3tuning::tune(
+  method = "design_points",
+  task = ctg_task,
+  learner = xgb_learner,
+  resampling = exp_design_e,
+  measures = msrs(c("classif.auc")),
+  design = xgb_hp$data,
+  batch_size = num_threads
+)
+```
+
+```{r, eval=calc_costly, results='hide'}
+set.seed(1337)
+xgb_learner_tuned_f <- mlr3tuning::tune(
+  method = "design_points",
+  task = ctg_task,
+  learner = xgb_learner,
+  resampling = exp_design_f,
+  measures = msrs(c("classif.auc")),
+  design = xgb_hp$data,
+  batch_size = num_threads
+)
+```
+
+```{r, eval=calc_costly}
+xgb_learner_tuned_all <- list(xgb_learner_tuned_a,
+                              xgb_learner_tuned_b,
+                              xgb_learner_tuned_c,
+                              xgb_learner_tuned_d,
+                              xgb_learner_tuned_e,
+                              xgb_learner_tuned_f)
+xgb_lta_archives <- 
+  lapply(xgb_learner_tuned_all, function(x) as.data.table(x$archive))
+names(xgb_lta_archives) <- letters[1:6]
+
+```
+
+--------------------------------------------------------------------------------
+
+## Exercise 5: Comparison of evaluation results based on different designs (20 minutes)
+
+In this section, we start the (most important) interpretation part. Recall that,
+so far, we have used six different experimental setup on the same ML task. Now,
+we will have a look at how these different designs affect our evaluation
+results.
+
+Let's have a look at the archives attribute from all benchmark results. Load the
+pre-computed results unless you were brave enough to run the training/tuning
+chunks yourself.
+
+```{r}
+if(save_vars){
+  saveRDS(xgb_lta_archives, "data/session2/xgb_lta_archives.rds")
+}
+xgb_lta_archives <- readRDS("data/session2/xgb_lta_archives.rds")
+```
+
+```{r}
+str(xgb_lta_archives, 1)
+```
+
+Of course, we are most interested in the AUCs.
+
+```{r}
+xgb_lta_aucs <- sapply(xgb_lta_archives, function(x) x$classif.auc) %>% as.data.table()
+head(xgb_lta_aucs)
+```
+
+```{r}
+pairs(xgb_lta_aucs)
+```
+
+**Question: How can the pairs plot be interpreted?**
+
+**Task: Estimate and interpret the correlation matrix of the `aucs` object.**
+
+```{r}
+NA # <--- YOUR CODE HERE --->
+```
+
+**Task: For each experimental design, find the hyperparameter configuration
+which maximizes the AUC and save the index in the vector `best`.**
+
+```{r}
+apply(xgb_lta_aucs, 2, max)
+best <- NA # <--- YOUR CODE HERE --->
+best
+```
+
+Let's have a look at the corresponding hyperparameters.
+
+```{r}
+xgb_hp$data[unique(best), ]
+```
+
+**Task: Fill in the following table, describing the context and resources (no R
+code required, only common sense). Which design(s) are most appropriate?**
+
++---+--------------+-----------+-----------------------------------+-----------+
+|   | Experimental | R         | Context\                          | R         |
+|   | design       | esources\ | (what are we estimating?)         | easonable |
+|   |              | (training |                                   | design?   |
+|   |              | runs per  |                                   |           |
+|   |              | HP)       |                                   |           |
++===+==============+===========+===================================+===========+
+| A | 10-fold CV\  | 10        | expected AUC when training models |           |
+|   |              |           | based on 90% of sample size       |           |
++---+--------------+-----------+-----------------------------------+-----------+
+| B | 5- fold CV\  |           |                                   |           |
++---+--------------+-----------+-----------------------------------+-----------+
+| C | 5-fold CV\   |           |                                   |           |
+|   | (4           |           |                                   |           |
+|   | repetitions) |           |                                   |           |
++---+--------------+-----------+-----------------------------------+-----------+
+| D | custom block |           |                                   |           |
+|   | design       |           |                                   |           |
+|   | (years)      |           |                                   |           |
++---+--------------+-----------+-----------------------------------+-----------+
+| E | custom       |           |                                   |           |
+|   | design       |           |                                   |           |
+|   | "train 1,    |           |                                   |           |
+|   | predict 1"   |           |                                   |           |
++---+--------------+-----------+-----------------------------------+-----------+
+| F | custom       |           |                                   |           |
+|   | design       |           |                                   |           |
+|   | "train 2,    |           |                                   |           |
+|   | predict 1"   |           |                                   |           |
++---+--------------+-----------+-----------------------------------+-----------+
+
+**Question: For design D, E and F, do the different sample sizes over the years
+pose a problem?**
+
+**Question: Can you think of other relevant custom design for this specific
+task?**
+
+--------------------------------------------------------------------------------
+
+## Exercise 6: Nested CV including inference (30 minutes)
+
+The goal for this exercise will be to conduct statistical inference for a more
+complex experimental design, namely nested cross-validation. First, let's have a
+look at the documentation of the `tune_nested` function.
+
+```{r, eval=FALSE}
+?tune_nested
+```
+
+```{r, eval=calc_costly, results='hide'}
+set.seed(1337)
+xgb_learner_tuned_nested <- mlr3tuning::tune_nested(
+  method = "random_search",
+  task = ctg_task,
+  learner = xgb_learner,
+  inner_resampling = rsmp("holdout", ratio=0.8),
+  outer_resampling = rsmp("cv", folds = 5),
+  measure = msr("classif.auc"),
+  term_evals = 40,
+  batch_size = num_threads
+)
+xgb_ltn_preds <- as.data.table(xgb_learner_tuned_nested$prediction())
+xgb_ltn_resamp <- xgb_learner_tuned_nested$resampling$instance
+```
+
+```{r}
+if(save_vars){
+  saveRDS(xgb_ltn_preds, "data/session2/xgb_ltn_preds.rds")
+  saveRDS(xgb_ltn_resamp, "data/session2/xgb_ltn_resamp.rds")
+}
+xgb_ltn_preds <- readRDS("data/session2/xgb_ltn_preds.rds")
+xgb_ltn_resamp <- readRDS("data/session2/xgb_ltn_resamp.rds")
+```
+
+Let's have a look at parts of the object.
+
+```{r}
+xgb_ltn_preds 
+```
+
+```{r}
+xgb_ltn_resamp
+```
+
+Finally, let's utilize the `ci.cvAUC` function from the `cvAUC` package to
+estimate the final AUC (outer CV loop) and also calculate a confidence interval.
+
+```{r, message=FALSE}
+library(cvAUC)
+```
+
+```{r, eval=FALSE}
+?ci.cvAUC
+```
+
+**Task: apply the `ci.cvAUC` function to calculate confidence intervals for the
+final AUC.**
+
+```{r}
+ci.cvAUC(
+  NA # <--- YOUR CODE HERE --->
+)
+```
+
+**Question: what is the advantage of nested CV (as conducted above) compared to
+usual 5-fold CV (as defined earlier in experimental design B)?**
+
+**Question: For what quantity have we just calculated an estimate and confidence
+interval?**
+
+**Question: Connecting these results to exercise 5, how relevant is our nested
+CV result from a practical viewpoint? Can the relevance be improved?**
+
+**Question: If we wanted to implement a trained predictive model in (clinical)
+practice - what would we need to do?**
+
+--------------------------------------------------------------------------------
+
+## Exercise 7: Tackle your own ML evaluation task (optional)
+
+Congratulations - you have reached the end of the course exercises.
+
+Feel free to use any remaining time for your own ML evaluation problem, i.e. try
+to narrow down important properties of your evaluation study such as
+
+-   ML task properties, in particular the baseline/benchmark and the evaluation
+    metric(s)
+
+-   Benchmark experimental design(s)
+
+-   Statistical analysis for performance evaluation
